@@ -65,7 +65,6 @@ Experiments were run on:
 - PyTorch: 2.7.0
 - Transformers: 4.49.0
 
-(Recommended to also record OS + CUDA + driver version in the manuscript if available.)
 
 ## Requirements (Dependencies)
 Install dependencies:
