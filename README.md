@@ -1,4 +1,4 @@
-# cueEM: Field-weighted BERT for Entity Matching
+# cueEM: Human-Like Entity Matching via Text-Centric Hybrid Attention
 
 ## Title
 cueEM — Field-weighted BERT for Entity Matching on Structured ER Benchmarks
