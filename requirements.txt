@@ -1,0 +1,15 @@
+# Core runtime
+python_version >= "3.13"
+
+# Deep learning
+torch==2.7.0
+transformers==4.49.0
+
+# Metrics / utilities
+numpy>=2.0.0
+scikit-learn>=1.4.0
+tqdm>=4.66.0
+packaging>=24.0
+
+# (Optional) If you switch back to NLTK stopwords/tokenizer in the future:
+# nltk>=3.9.0
