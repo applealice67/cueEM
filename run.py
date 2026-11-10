@@ -30,7 +30,7 @@ def set_seed(seed: int = 42) -> None:
 
 
 # -----------------------
-# Stopwords (your custom list)
+# Stopwords
 # -----------------------
 STOP_WORDS = set([
     'such', "you'd", 'y', 't', 'down', 'i', 'by', 'whom', 'most', 'his', 'does', 'are',
@@ -66,9 +66,11 @@ def no_stopwords(line: str) -> str:
 # -----------------------
 _number_pattern = re.compile(r"\d+(\.\d+)?")
 
+
 def extract_number(s: str) -> float:
     m = _number_pattern.search(str(s))
     return float(m.group()) if m else 0.0
+
 
 def subtract_numbers(a: str, b: str) -> int:
     return int(abs(extract_number(a) - extract_number(b)))
@@ -153,14 +155,12 @@ def parse_line(dataset: str, line: str) -> Dict[str, Any]:
         else:
             result[key] = v
 
-    # label is the last token in the last field value
     if value and value[-1].isdigit():
         result["label"] = int(value[-1])
 
     label = int(result["label"])
     del result["label"]
 
-    # normalize to (left,right)
     row: Dict[str, Tuple[str, str]] = {}
     for k, v in result.items():
         if isinstance(v, tuple) and len(v) >= 2:
@@ -186,7 +186,6 @@ def parse_file(dataset: str, file_path: str) -> Dict[str, List[Any]]:
             for k, v in parsed.items():
                 final_result.setdefault(k, []).append(v)
 
-    # numeric post-processing (like your code)
     numeric_key = None
     for cand in ["price", "ABV", "Price", "year"]:
         if cand in final_result:
@@ -231,8 +230,34 @@ def balance_alternate(rows: List[List[Any]]) -> List[List[Any]]:
     return out
 
 
+def split_train_valid(
+    rows: List[List[Any]],
+    valid_ratio: float = 0.2,
+    seed: int = 42,
+) -> Tuple[List[List[Any]], List[List[Any]]]:
+    """Stratified split of the raw training rows into a fit part and a validation part."""
+    if valid_ratio <= 0.0 or len(rows) < 10:
+        return list(rows), []
+
+    rng = random.Random(seed)
+    pos = [r for r in rows if int(r[-1]) == 1]
+    neg = [r for r in rows if int(r[-1]) != 1]
+    rng.shuffle(pos)
+    rng.shuffle(neg)
+
+    n_pos_val = max(1, int(len(pos) * valid_ratio))
+    n_neg_val = max(1, int(len(neg) * valid_ratio))
+
+    valid_rows = pos[:n_pos_val] + neg[:n_neg_val]
+    train_rows = pos[n_pos_val:] + neg[n_neg_val:]
+
+    rng.shuffle(train_rows)
+    rng.shuffle(valid_rows)
+    return train_rows, valid_rows
+
+
 # -----------------------
-# Attribute weights (your mapping)
+# Attribute weights
 # -----------------------
 def get_attr_weight(dataset: str) -> List[float]:
     if dataset == "Amazon-Google":
@@ -268,7 +293,7 @@ class SentenceSimilarityDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         label = int(self.data[idx][-1])
-        pairs = self.data[idx][:-1]  # list[(t1,t2), ...]
+        pairs = self.data[idx][:-1]
         encs = []
         for t1, t2 in pairs:
             enc = self.tokenizer(
@@ -282,7 +307,7 @@ class SentenceSimilarityDataset(Dataset):
             )
             encs.append(enc)
 
-        input_ids = [e["input_ids"].squeeze(0) for e in encs]  # [L]
+        input_ids = [e["input_ids"].squeeze(0) for e in encs]
         attn = [e["attention_mask"].squeeze(0) for e in encs]
         if "token_type_ids" in encs[0]:
             tti = [e["token_type_ids"].squeeze(0) for e in encs]
@@ -335,7 +360,6 @@ def evaluate(
 
     with torch.no_grad():
         for batch in loader:
-            # batch contains list tensors for each pair
             labels = batch["labels"].to(device).view(-1, 1)
 
             outputs_list = []
@@ -375,6 +399,7 @@ def train_and_eval(
     lambda_l2: float,
     batch_size: int,
     seed: int,
+    valid_ratio: float = 0.2,
 ) -> None:
     set_seed(seed)
 
@@ -401,18 +426,29 @@ def train_and_eval(
     train_dic = parse_file(dataset, train_txt)
     test_dic = parse_file(dataset, test_txt)
 
-    train_rows = balance_alternate(dict_to_rows(train_dic))
+    raw_train_rows = dict_to_rows(train_dic)
+    fit_rows, valid_rows = split_train_valid(raw_train_rows, valid_ratio=valid_ratio, seed=seed)
+    train_rows = balance_alternate(fit_rows)
     test_rows = dict_to_rows(test_dic)
 
     pair_num = len(train_rows[0]) - 1
-    print(f"[Info] pair_num={pair_num}, train={len(train_rows)}, test={len(test_rows)}")
-    logging.info(f"pair_num={pair_num}, train={len(train_rows)}, test={len(test_rows)}")
+    print(
+        f"[Info] pair_num={pair_num}, train={len(train_rows)}, "
+        f"valid={len(valid_rows)}, test={len(test_rows)}"
+    )
+    logging.info(
+        f"pair_num={pair_num}, train={len(train_rows)}, "
+        f"valid={len(valid_rows)}, test={len(test_rows)}"
+    )
 
-    # also write train/test csv like your code
     os.makedirs(os.path.join(data_dir, dataset), exist_ok=True)
     with open(os.path.join(data_dir, dataset, "train.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in train_rows:
+            w.writerow(r)
+    with open(os.path.join(data_dir, dataset, "valid.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        for r in valid_rows:
             w.writerow(r)
     with open(os.path.join(data_dir, dataset, "test.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -431,15 +467,18 @@ def train_and_eval(
     )
 
     train_ds = SentenceSimilarityDataset(train_rows, tokenizer, max_len)
+    valid_ds = SentenceSimilarityDataset(valid_rows, tokenizer, max_len)
     test_ds = SentenceSimilarityDataset(test_rows, tokenizer, max_len)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    valid_loader = DataLoader(valid_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     save_path = os.path.join(data_dir, dataset, "best_model.pth")
     result_path = os.path.join(data_dir, dataset, "result.csv")
 
     best_f1 = -1.0
+    best_epoch = -1
 
     for epoch in range(epochs):
         model.train()
@@ -447,7 +486,7 @@ def train_and_eval(
 
         running = 0.0
         steps = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", ncols=100)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}", ncols=100)
         for batch in pbar:
             labels = batch["labels"].to(device).view(-1, 1)
 
@@ -477,14 +516,15 @@ def train_and_eval(
             pbar.set_postfix(loss=running / max(steps, 1))
 
         train_loss = running / max(steps, 1)
-        logging.info(f"Epoch {epoch+1} TrainLoss={train_loss:.6f}")
+        logging.info(f"Epoch {epoch + 1} TrainLoss={train_loss:.6f}")
 
-        acc, prec, rec, f1, _, _ = evaluate(model, classifier, test_loader, device, pair_num)
-        print(f"[Eval] acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
-        logging.info(f"Eval acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
+        acc, prec, rec, f1, _, _ = evaluate(model, classifier, valid_loader, device, pair_num)
+        print(f"[Valid] epoch={epoch + 1} acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
+        logging.info(f"Valid epoch={epoch + 1} acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
 
         if f1 > best_f1:
             best_f1 = f1
+            best_epoch = epoch + 1
             torch.save(
                 {
                     "dataset": dataset,
@@ -498,10 +538,9 @@ def train_and_eval(
                 },
                 save_path,
             )
-            print(f"[Best] best_f1={best_f1:.4f} saved={save_path}")
-            logging.info(f"Best f1={best_f1:.4f}")
+            print(f"[Best] valid_f1={best_f1:.4f} epoch={best_epoch} saved={save_path}")
+            logging.info(f"Best valid_f1={best_f1:.4f} epoch={best_epoch}")
 
-    # load best and final eval + save predictions
     ckpt = torch.load(save_path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     classifier.load_state_dict(ckpt["classifier_state_dict"])
@@ -511,8 +550,12 @@ def train_and_eval(
     logging.info(f"Loaded best weights: {learned_w}")
 
     acc, prec, rec, f1, golds, preds = evaluate(model, classifier, test_loader, device, pair_num)
-    print(f"[Final] acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
-    logging.info(f"Final acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}")
+    print(
+        f"[Test] best_epoch={best_epoch} acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}"
+    )
+    logging.info(
+        f"Test best_epoch={best_epoch} acc={acc:.4f} prec={prec:.4f} rec={rec:.4f} f1={f1:.4f}"
+    )
 
     with open(result_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -538,6 +581,7 @@ def parse_args():
     ap.add_argument("--lambda_l2", type=float, default=1e-4)
     ap.add_argument("--batch_size", type=int, default=64)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--valid_ratio", type=float, default=0.2)
     return ap.parse_args()
 
 
@@ -553,4 +597,5 @@ if __name__ == "__main__":
         lambda_l2=args.lambda_l2,
         batch_size=args.batch_size,
         seed=args.seed,
+        valid_ratio=args.valid_ratio,
     )
